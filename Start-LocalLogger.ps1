@@ -1,331 +1,502 @@
-<#
+﻿<#
 .SYNOPSIS
-    Angel System Logger Pro - Local System Activity Logger & Startup Monitor
+    Angel Core Logger Pro - Deep Background & System Activity PowerShell Engine
 .DESCRIPTION
-    Monitors and logs local computer activity (Opened/Closed Apps, Active Window/Browser Tabs,
-    DNS Website Lookups, External Internet Connections, and Windows Service state changes)
-    both to the console and to a local log file.
+    Uses PowerShell, CIM/WMI, NetTCPConnection, DnsClientCache, ScheduledTask, and Registry/File
+    watchers to capture both visible user activity AND hidden background Windows activity that
+    most users never see:
+      1. Hidden Background Process Spawns (with Parent Process chain & full Command-Line arguments)
+      2. Silent Windows Scheduled Tasks triggering in the background
+      3. Outbound Network Connections & Newly Opened Listening Ports (with IP Privacy Masking)
+      4. Background DNS Domain Resolutions & Telemetry Lookups
+      5. Windows Services Starting / Stopping
+      6. Temp / Downloads Executable Drops & Startup Persistence Changes
+      7. Foreground Applications & Active Window/Browser Tab Switches
 
-    Includes configurable settings and live keyboard toggles for:
-      - IP Address Filtering (ON by default -> masks IP digits with '#', OFF -> reveals raw IPs)
-      - Administration Mode (OFF by default -> runs in standard user mode without admin actions)
-      - Granular Exclusion Toggles (Apps, Window Titles, Websites/DNS, Internet, Services)
-      - Windows Startup Registration (registers the EXE in Windows Startup / Task Manager Startup Apps)
+    Supports both:
+      - GUI Stream Mode (-GuiStream): Streams JSON events to the Angel Core Logger desktop window
+      - Interactive Console Mode: Runs directly in a PowerShell terminal
 #>
 
-& {
-    # =========================================================================
-    # 1. USER SETTINGS & PRIVACY TOGGLES
-    # =========================================================================
-    $Settings = [ordered]@{
-        # --- Privacy & Security Filters ---
-        FilterIPAddresses      = $true    # ON by default: masks IP addresses as ###.###.###.### (OFF reveals raw IPs)
-        UseAdminFeatures       = $false   # OFF by default: skips admin-only calls like Clear-DnsClientCache
+param(
+    [switch]$GuiStream,
+    [switch]$NoFilterIP,
+    [switch]$NoDeepBackground,
+    [switch]$AdminMode,
+    [switch]$NoFileLog,
+    [int]$PollMs = 900
+)
 
-        # --- Local Log File Settings ---
-        EnableFileLogging      = $true    # Save all events to a local log file on disk
-        LogDirectory           = Join-Path $env:USERPROFILE "Documents\LocalActivityLogs"
-        LogFilePrefix          = "ActivityLog"
+$ErrorActionPreference = "SilentlyContinue"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-        # --- Startup Integration ---
-        InstallToStartup       = $true    # Enabled by default for Startup EXE (press [U] live to toggle ON/OFF)
+# =========================================================================
+# 1. SETTINGS & STATE
+# =========================================================================
+$Settings = [ordered]@{
+    FilterIPAddresses      = (-not $NoFilterIP.IsPresent)
+    DeepBackgroundMode     = (-not $NoDeepBackground.IsPresent)
+    UseAdminFeatures       = $AdminMode.IsPresent
+    EnableFileLogging      = (-not $NoFileLog.IsPresent)
+    LogDirectory           = Join-Path $env:USERPROFILE "Documents\LocalActivityLogs"
+    LogFilePrefix          = "ActivityLog"
+    PollIntervalMs         = $PollMs
+}
 
-        # --- What to Log (Set to $false to stop logging specific categories) ---
-        LogApps                = $true    # Track opened and closed applications
-        LogWindowTitles        = $true    # Track active window and browser tab title changes
-        LogWebsites            = $true    # Track DNS domain lookups
-        LogInternetConnections = $true    # Track outbound TCP connections
-        LogServices            = $true    # Track Windows service start/stop events
+if ($Settings.EnableFileLogging -and -not (Test-Path $Settings.LogDirectory)) {
+    New-Item -ItemType Directory -Path $Settings.LogDirectory -Force | Out-Null
+}
 
-        # --- Exclusion Lists (Items here are never logged) ---
-        ExcludedProcesses      = @("Idle", "svchost", "SearchIndexer", "backgroundTaskHost", "RuntimeBroker", "AngelSystemLoggerPro", "Start-LocalLogger")
-        ExcludedDomains        = @("localhost", "wpad")
-        PollIntervalMs         = 800
+function Get-LogFilePath {
+    $DateStamp = Get-Date -Format "yyyy-MM-dd"
+    return Join-Path $Settings.LogDirectory "$($Settings.LogFilePrefix)_$DateStamp.log"
+}
+
+function Format-IPFilter ([string]$Text) {
+    if (-not $Settings.FilterIPAddresses -or [string]::IsNullOrEmpty($Text)) {
+        return $Text
+    }
+    $Masked = [regex]::Replace($Text, '\b(?:\d{1,3}\.){3}\d{1,3}\b', {
+        param($Match)
+        return ($Match.Value -replace '\d', '#')
+    })
+    $Masked = [regex]::Replace($Masked, '\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]+\b', {
+        param($Match)
+        return ($Match.Value -replace '[0-9a-fA-F]', '#')
+    })
+    return $Masked
+}
+
+# Friendly descriptions for common hidden Windows processes
+$ProcessExplanations = @{
+    "svchost"                = "Windows Service Host (runs background system services & network tasks)"
+    "dllhost"                = "COM Surrogate (hosts background DLL components outside of main apps)"
+    "conhost"                = "Console Window Host (spawned whenever a CLI or hidden script runs)"
+    "rundll32"               = "Windows 32-bit DLL Runner (executes functions inside system DLLs)"
+    "wmiprvse"               = "WMI Provider Host (executes system hardware/process queries in background)"
+    "taskhostw"              = "Windows Task Host (runs background scheduled tasks & maintenance)"
+    "backgroundTaskHost"     = "UWP Background Task Host (runs background tasks for Microsoft Store apps)"
+    "RuntimeBroker"          = "Runtime Broker (manages permissions for Windows Store / UWP apps)"
+    "SearchProtocolHost"     = "Windows Search Indexer Protocol Host (scans files in background)"
+    "SearchFilterHost"       = "Windows Search Content Filter (extracts text from files for indexing)"
+    "MoUsoCoreWorker"        = "Windows Update USO Worker (silently checks & prepares Windows updates)"
+    "TiWorker"               = "Windows Modules Installer Worker (installs updates/servicing in background)"
+    "TrustedInstaller"       = "Windows Module Installer Service (modifies protected system files)"
+    "CompatTelRunner"        = "Microsoft Compatibility Telemetry (scans system for update telemetry)"
+    "audiodg"                = "Windows Audio Device Graph Isolation (DSP & audio engine processing)"
+    "smartscreen"            = "Windows Defender SmartScreen (checks downloaded files & app reputation)"
+    "MpCmdRun"               = "Microsoft Defender CLI Utility (background signature update or scan)"
+    "MsMpEng"                = "Microsoft Defender Antivirus Engine (real-time background scanner)"
+    "sppsvc"                 = "Microsoft Software Protection Platform (verifies Windows licensing)"
+    "WmiApSrv"               = "WMI Performance Adapter (collects performance counters)"
+    " consent"               = "Windows UAC Elevation Prompt (User Account Control security check)"
+    "powershell"             = "Windows PowerShell Engine (automation & system management script)"
+    "pwsh"                   = "PowerShell Core Engine (automation & script execution)"
+    "cmd"                    = "Windows Command Processor (batch or shell command execution)"
+}
+
+function Get-ProcessFriendlyDescription ([string]$ProcName, [bool]$IsHidden) {
+    $Clean = $ProcName -replace '\.exe$',''
+    if ($ProcessExplanations.ContainsKey($Clean)) {
+        return $ProcessExplanations[$Clean]
+    }
+    if ($IsHidden) {
+        return "Background process running without a visible taskbar window"
+    }
+    return "Desktop application process"
+}
+
+function Emit-ActivityEvent {
+    param(
+        [string]$Category,      # HIDDEN, APP, WINDOW, NETWORK, DNS, TASK, SERVICE, SECURITY, SYSTEM
+        [string]$Badge,         # Short badge label
+        [string]$Title,         # Friendly headline
+        [string]$Subtitle,      # Plain-English explanation
+        [string]$Details,       # Technical details (PID, Parent, CmdLine, IP/Port)
+        [string]$Severity = "Info" # Info, Hidden, Warning, Success, Accent
+    )
+
+    $Now = Get-Date
+    $TimeFull = $Now.ToString("yyyy-MM-dd HH:mm:ss")
+    $TimeShort = $Now.ToString("HH:mm:ss")
+
+    $SafeTitle    = Format-IPFilter $Title
+    $SafeSubtitle = Format-IPFilter $Subtitle
+    $SafeDetails  = Format-IPFilter $Details
+
+    if ($Settings.EnableFileLogging) {
+        $PaddedBadge = $Badge.PadRight(13)
+        $LogLine = "[$TimeFull] [$PaddedBadge] $SafeTitle | $SafeSubtitle $(if ($SafeDetails) { "($SafeDetails)" })"
+        Add-Content -Path (Get-LogFilePath) -Value $LogLine -Encoding UTF8 -ErrorAction SilentlyContinue
     }
 
-    # =========================================================================
-    # 2. HELPER FUNCTIONS (FILE LOGGING, IP MASKING, STARTUP REGISTRATION)
-    # =========================================================================
-    if ($Settings.EnableFileLogging -and -not (Test-Path $Settings.LogDirectory)) {
-        New-Item -ItemType Directory -Path $Settings.LogDirectory -Force | Out-Null
-    }
-
-    function Get-LogFilePath {
-        $DateStamp = Get-Date -Format "yyyy-MM-dd"
-        return Join-Path $Settings.LogDirectory "$($Settings.LogFilePrefix)_$DateStamp.log"
-    }
-
-    function Format-IPFilter ([string]$Text) {
-        if (-not $Settings.FilterIPAddresses -or [string]::IsNullOrEmpty($Text)) {
-            return $Text
+    if ($GuiStream) {
+        $Payload = @{
+            time     = $TimeShort
+            fullTime = $TimeFull
+            category = $Category
+            badge    = $Badge
+            title    = $SafeTitle
+            subtitle = $SafeSubtitle
+            details  = $SafeDetails
+            severity = $Severity
+        } | ConvertTo-Json -Compress
+        [Console]::Out.WriteLine("ANGEL_EVENT|$Payload")
+        [Console]::Out.Flush()
+    } else {
+        $Color = switch ($Category) {
+            "HIDDEN"   { "Yellow" }
+            "APP"      { "Green" }
+            "WINDOW"   { "Cyan" }
+            "NETWORK"  { "DarkYellow" }
+            "DNS"      { "Magenta" }
+            "TASK"     { "Blue" }
+            "SERVICE"  { "Blue" }
+            "SECURITY" { "Red" }
+            default    { "Gray" }
         }
-        # Mask IPv4 addresses (replaces digits with #, e.g. 142.250.190.46 -> ###.###.###.##)
-        $Masked = [regex]::Replace($Text, '\b(?:\d{1,3}\.){3}\d{1,3}\b', {
-            param($Match)
-            return ($Match.Value -replace '\d', '#')
-        })
-        # Mask IPv6 addresses (2+ colons with hex segments)
-        $Masked = [regex]::Replace($Masked, '\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]+\b', {
-            param($Match)
-            return ($Match.Value -replace '[0-9a-fA-F]', '#')
-        })
-        return $Masked
+        Write-Host "[$TimeShort] " -NoNewline -ForegroundColor DarkGray
+        Write-Host "[$($Badge.PadRight(13))] " -NoNewline -ForegroundColor $Color
+        Write-Host "$SafeTitle " -NoNewline -ForegroundColor White
+        Write-Host "- $SafeSubtitle" -ForegroundColor Gray
     }
+}
 
-    function Write-ActivityLog ($Tag, $Message, $Color = "White") {
-        $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $ShortTime = Get-Date -Format "HH:mm:ss"
-        $PaddedTag = $Tag.PadRight(13)
+# =========================================================================
+# 2. INITIAL BASELINE SNAPSHOT
+# =========================================================================
+$SelfPid = $PID
+$ParentSelfPid = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId
 
-        # Apply IP filter if enabled
-        $SafeMessage = Format-IPFilter $Message
-
-        # Print to console
-        Write-Host "[$ShortTime] " -NoNewline -ForegroundColor DarkGray
-        Write-Host "[$PaddedTag] " -NoNewline -ForegroundColor $Color
-        Write-Host $SafeMessage -ForegroundColor White
-
-        # Append to local log file
-        if ($Settings.EnableFileLogging) {
-            $LogLine = "[$Time] [$PaddedTag] $SafeMessage"
-            Add-Content -Path (Get-LogFilePath) -Value $LogLine -Encoding UTF8 -ErrorAction SilentlyContinue
-        }
+$Procs = @{}
+Get-Process | ForEach-Object {
+    $Procs[$_.Id] = @{
+        Name   = $_.ProcessName
+        Title  = $_.MainWindowTitle
+        Handle = $_.MainWindowHandle
     }
+}
 
-    function Get-TargetExecutablePath {
-        if ($env:ANGEL_LOGGER_EXE_PATH -and (Test-Path $env:ANGEL_LOGGER_EXE_PATH)) {
-            return $env:ANGEL_LOGGER_EXE_PATH
-        }
-        if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
-            return $PSCommandPath
-        }
-        return $null
+$Services = @{}
+Get-Service | ForEach-Object {
+    $Services[$_.Name] = @{
+        Status      = [string]$_.Status
+        DisplayName = $_.DisplayName
     }
+}
 
-    function Test-StartupRegistration {
-        $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-        $Prop = Get-ItemProperty -Path $RunKey -Name "AngelSystemLoggerPro" -ErrorAction SilentlyContinue
-        return ($null -ne $Prop)
-    }
+$Tasks = @{}
+Get-ScheduledTask | ForEach-Object {
+    $Tasks["$($_.TaskPath)$($_.TaskName)"] = [string]$_.State
+}
 
-    function Set-StartupRegistration ([bool]$Enable) {
-        $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-        $AppName = "AngelSystemLoggerPro"
-        $StartupDir = [Environment]::GetFolderPath('Startup')
-        $LegacyBatPath = Join-Path $StartupDir "Start-LocalActivityLogger.bat"
-        $TargetPath = Get-TargetExecutablePath
+$DnsSeen = @{}
+Get-DnsClientCache | ForEach-Object {
+    if ($_.Entry) { $DnsSeen[$_.Entry] = $true }
+}
 
-        if (-not $TargetPath) {
-            Write-ActivityLog "STARTUP" "Could not determine executable or script path for Windows Startup." "Red"
-            return
-        }
-
-        if ($Enable) {
-            $CommandValue = if ($TargetPath.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
-                "`"$TargetPath`""
-            } else {
-                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$TargetPath`""
-            }
-            Set-ItemProperty -Path $RunKey -Name $AppName -Value $CommandValue -Force
-            Write-ActivityLog "STARTUP" "Registered in Windows Startup Apps (Task Manager -> Startup): $TargetPath" "Green"
-        } else {
-            $Removed = $false
-            if (Test-StartupRegistration) {
-                Remove-ItemProperty -Path $RunKey -Name $AppName -Force -ErrorAction SilentlyContinue
-                $Removed = $true
-            }
-            if (Test-Path $LegacyBatPath) {
-                Remove-Item -Path $LegacyBatPath -Force -ErrorAction SilentlyContinue
-                $Removed = $true
-            }
-            if ($Removed) {
-                Write-ActivityLog "STARTUP" "Removed from Windows Startup Apps." "Yellow"
-            } else {
-                Write-ActivityLog "STARTUP" "Startup registration is not currently active." "DarkGray"
-            }
-        }
-    }
-
-    function Show-Header {
-        Clear-Host
-        $HasAdminToken = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-        $AdminStatus   = if ($Settings.UseAdminFeatures -and $HasAdminToken) { "ON (Elevated)" } elseif ($Settings.UseAdminFeatures) { "ON (No Admin Token)" } else { "OFF (Standard User Mode)" }
-        $IPStatus      = if ($Settings.FilterIPAddresses) { "ON (Blocking/Masking IPs with #)" } else { "OFF (Revealing Raw IPs)" }
-        $FileStatus    = if ($Settings.EnableFileLogging) { "ON -> $(Get-LogFilePath)" } else { "OFF (Console Only)" }
-        $StartupStatus = if (Test-StartupRegistration) { "ON (Registered in Windows Startup Apps)" } else { "OFF (Not in Startup)" }
-
-        Write-Host "==========================================================================" -ForegroundColor Cyan
-        Write-Host "   ANGEL SYSTEM LOGGER PRO - LOCAL ACTIVITY LOGGER & MONITOR              " -ForegroundColor Green
-        Write-Host "==========================================================================" -ForegroundColor Cyan
-        Write-Host "   Log File      : $FileStatus" -ForegroundColor Gray
-        Write-Host "   Startup   [U] : $StartupStatus" -ForegroundColor $(if (Test-StartupRegistration) { "Green" } else { "DarkGray" })
-        Write-Host "   IP Filter [I] : $IPStatus" -ForegroundColor $(if ($Settings.FilterIPAddresses) { "Green" } else { "Yellow" })
-        Write-Host "   Admin Mode[A] : $AdminStatus" -ForegroundColor $(if ($Settings.UseAdminFeatures) { "Cyan" } else { "DarkGray" })
-        Write-Host "   Categories    : Apps[1]:$($Settings.LogApps) | Tabs[2]:$($Settings.LogWindowTitles) | Web[3]:$($Settings.LogWebsites) | Net[4]:$($Settings.LogInternetConnections) | Svc[5]:$($Settings.LogServices)" -ForegroundColor Gray
-        Write-Host "   Controls      : [I] Toggle IP Filter | [A] Toggle Admin | [F] Toggle File Log" -ForegroundColor Yellow
-        Write-Host "                   [1-5] Toggle Categories | [U] Toggle Startup | [Ctrl+C] Stop" -ForegroundColor Yellow
-        Write-Host "==========================================================================`n" -ForegroundColor Cyan
-    }
-
-    # =========================================================================
-    # 3. INITIALIZATION & SNAPSHOTS
-    # =========================================================================
-    if ($Settings.UseAdminFeatures) {
-        Clear-DnsClientCache -ErrorAction SilentlyContinue
-    }
-
-    if ($Settings.InstallToStartup -and -not (Test-StartupRegistration)) {
-        Set-StartupRegistration -Enable $true
-    }
-    $Settings.InstallToStartup = (Test-StartupRegistration)
-
-    Show-Header
-    Write-ActivityLog "LOGGER INIT" "Local logger started (IP Filter: $($Settings.FilterIPAddresses), Admin Mode: $($Settings.UseAdminFeatures), Startup: $($Settings.InstallToStartup))" "Cyan"
-
-    # Take initial snapshot of current system state so only NEW activity is logged
-    $Procs = @{}
-    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-        $Procs[$_.Id] = @{ Name = $_.ProcessName; Title = $_.MainWindowTitle }
-    }
-
-    $Services = @{}
-    Get-Service -ErrorAction SilentlyContinue | ForEach-Object {
-        $Services[$_.Name] = $_.Status
-    }
-
-    $DnsSeen = @{}
-    Get-DnsClientCache -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($_.Entry) { $DnsSeen[$_.Entry] = $true }
-    }
-
-    $NetSeen = @{}
-    Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | ForEach-Object {
+$NetSeen = @{}
+$ListenSeen = @{}
+Get-NetTCPConnection | ForEach-Object {
+    if ($_.State -eq 'Established' -or $_.State -eq 'SynSent') {
         $NetSeen["$($_.OwningProcess)-$($_.RemoteAddress):$($_.RemotePort)"] = $true
+    } elseif ($_.State -eq 'Listen') {
+        $ListenSeen["$($_.OwningProcess)-$($_.LocalAddress):$($_.LocalPort)"] = $true
+    }
+}
+
+# Watch Temp & Downloads for newly dropped executables/scripts
+$WatchDirs = @(
+    $env:TEMP,
+    (Join-Path $env:USERPROFILE "Downloads")
+) | Where-Object { Test-Path $_ }
+
+$SeenFiles = @{}
+foreach ($dir in $WatchDirs) {
+    Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $SeenFiles[$_.FullName] = $true
+    }
+}
+
+# Snapshot Startup Registry keys
+$StartupSnapshot = @{}
+$RunPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+if (Test-Path $RunPath) {
+    $Props = Get-ItemProperty -Path $RunPath
+    foreach ($p in $Props.PSObject.Properties) {
+        if ($p.Name -notlike "PS*") {
+            $StartupSnapshot[$p.Name] = [string]$p.Value
+        }
+    }
+}
+
+Emit-ActivityEvent -Category "SYSTEM" -Badge "ENGINE READY" `
+    -Title "PowerShell Deep Activity Engine connected ($($Procs.Count) active processes, $($Services.Count) services indexed)" `
+    -Subtitle "Monitoring visible apps, hidden background spawns, scheduled tasks, DNS lookups, network sockets, and startup items." `
+    -Details "Log File: $(Get-LogFilePath) | IP Privacy Mask: $($Settings.FilterIPAddresses) | Deep Background: $($Settings.DeepBackgroundMode)" `
+    -Severity "Success"
+
+# Emit initial summary of notable hidden background processes already running
+$HiddenNetCount = 0
+foreach ($c in (Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)) {
+    if ($c.RemoteAddress -notmatch "^(127\.|0\.|::1|fe80:)") {
+        $HiddenNetCount++
+    }
+}
+$RunningTasks = @(Get-ScheduledTask | Where-Object { $_.State -eq 'Running' })
+if ($RunningTasks.Count -gt 0) {
+    $TaskNames = ($RunningTasks | Select-Object -First 4 -ExpandProperty TaskName) -join ", "
+    Emit-ActivityEvent -Category "TASK" -Badge "BG TASKS" `
+        -Title "$($RunningTasks.Count) Windows Scheduled Tasks are actively running in the background right now" `
+        -Subtitle "Active tasks include: $TaskNames" `
+        -Details "Baseline scan of Windows Task Scheduler" `
+        -Severity "Hidden"
+}
+
+$LoopCounter = 0
+
+# =========================================================================
+# 3. LIVE MONITORING LOOP
+# =========================================================================
+while ($true) {
+    $LoopCounter++
+
+    # --- A. Process Spawns, Hidden Background Processes & Active Window Titles ---
+    $CurrentProcs = @{}
+    $NewPids = New-Object System.Collections.Generic.List[int]
+
+    foreach ($p in (Get-Process)) {
+        if ($p.Id -eq $SelfPid -or $p.Id -eq $ParentSelfPid) { continue }
+        if ($p.ProcessName -in @("AngelSystemLoggerPro", "Start-LocalLogger")) { continue }
+
+        $CurrentProcs[$p.Id] = @{
+            Name   = $p.ProcessName
+            Title  = $p.MainWindowTitle
+            Handle = $p.MainWindowHandle
+        }
+
+        if (-not $Procs.ContainsKey($p.Id)) {
+            $NewPids.Add($p.Id)
+        }
+        elseif ($p.MainWindowTitle -and $Procs[$p.Id].Title -ne $p.MainWindowTitle) {
+            Emit-ActivityEvent -Category "WINDOW" -Badge "ACTIVE TAB" `
+                -Title "$($p.ProcessName).exe switched active window to '$($p.MainWindowTitle)'" `
+                -Subtitle "Foreground window or browser tab title changed" `
+                -Details "PID: $($p.Id) | Process: $($p.ProcessName).exe" `
+                -Severity "Info"
+        }
     }
 
-    # =========================================================================
-    # 4. MAIN MONITORING & LIVE KEYBOARD TOGGLE LOOP
-    # =========================================================================
-    while ($true) {
-        # Check for live hotkey presses without blocking
-        if ([Console]::KeyAvailable) {
-            $KeyInfo = [Console]::ReadKey($true)
-            switch ($KeyInfo.Key) {
-                'I' {
-                    $Settings.FilterIPAddresses = -not $Settings.FilterIPAddresses
-                    Show-Header
-                    $StateMsg = if ($Settings.FilterIPAddresses) { "ON (IP addresses will be masked with #)" } else { "OFF (Raw IP addresses will be revealed)" }
-                    Write-ActivityLog "SETTING" "IP Address Filter toggled $StateMsg" "Magenta"
-                }
-                'A' {
-                    $Settings.UseAdminFeatures = -not $Settings.UseAdminFeatures
-                    if ($Settings.UseAdminFeatures) { Clear-DnsClientCache -ErrorAction SilentlyContinue }
-                    Show-Header
-                    Write-ActivityLog "SETTING" "Administration Mode toggled to: $($Settings.UseAdminFeatures)" "Magenta"
-                }
-                'F' {
-                    $Settings.EnableFileLogging = -not $Settings.EnableFileLogging
-                    Show-Header
-                    Write-ActivityLog "SETTING" "Local File Logging toggled to: $($Settings.EnableFileLogging)" "Magenta"
-                }
-                'U' {
-                    $Settings.InstallToStartup = -not (Test-StartupRegistration)
-                    Set-StartupRegistration -Enable $Settings.InstallToStartup
-                    Show-Header
-                    Write-ActivityLog "SETTING" "Windows Startup Registration toggled to: $($Settings.InstallToStartup)" "Magenta"
-                }
-                'D1' { $Settings.LogApps = -not $Settings.LogApps; Show-Header; Write-ActivityLog "SETTING" "App Logging: $($Settings.LogApps)" "Magenta" }
-                'D2' { $Settings.LogWindowTitles = -not $Settings.LogWindowTitles; Show-Header; Write-ActivityLog "SETTING" "Window/Tab Logging: $($Settings.LogWindowTitles)" "Magenta" }
-                'D3' { $Settings.LogWebsites = -not $Settings.LogWebsites; Show-Header; Write-ActivityLog "SETTING" "Website DNS Logging: $($Settings.LogWebsites)" "Magenta" }
-                'D4' { $Settings.LogInternetConnections = -not $Settings.LogInternetConnections; Show-Header; Write-ActivityLog "SETTING" "Internet Connection Logging: $($Settings.LogInternetConnections)" "Magenta" }
-                'D5' { $Settings.LogServices = -not $Settings.LogServices; Show-Header; Write-ActivityLog "SETTING" "Service Logging: $($Settings.LogServices)" "Magenta" }
-            }
+    # Enrich new processes with CIM parent process + command line details
+    if ($NewPids.Count -gt 0) {
+        $CimMap = @{}
+        Get-CimInstance Win32_Process | ForEach-Object {
+            $CimMap[[int]$_.ProcessId] = $_
         }
 
-        # 1. Check for Opened Apps, Closed Apps, and Browser Tab Changes
-        $CurrentProcs = @{}
-        foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
-            $CurrentProcs[$p.Id] = @{ Name = $p.ProcessName; Title = $p.MainWindowTitle }
+        foreach ($newId in $NewPids) {
+            $pInfo = $CurrentProcs[$newId]
+            $pName = $pInfo.Name
+            $hasWindow = ($pInfo.Handle -ne 0 -and -not [string]::IsNullOrWhiteSpace($pInfo.Title))
+            $cim = $CimMap[$newId]
 
-            if ($Settings.ExcludedProcesses -contains $p.ProcessName) {
-                continue
+            $parentPid = if ($cim) { [int]$cim.ParentProcessId } else { 0 }
+            $parentName = if ($parentPid -and $CurrentProcs.ContainsKey($parentPid)) {
+                "$($CurrentProcs[$parentPid].Name).exe"
+            } elseif ($parentPid -and $Procs.ContainsKey($parentPid)) {
+                "$($Procs[$parentPid].Name).exe"
+            } elseif ($cim -and $CimMap.ContainsKey($parentPid)) {
+                $CimMap[$parentPid].Name
+            } else {
+                "System / Explorer"
             }
 
-            if (-not $Procs.ContainsKey($p.Id)) {
-                if ($Settings.LogApps) {
-                    $TabInfo = if ($Settings.LogWindowTitles -and $p.MainWindowTitle) { " -> Window: '$($p.MainWindowTitle)'" } else { "" }
-                    Write-ActivityLog "APP OPENED" "$($p.ProcessName).exe started (PID: $($p.Id))$TabInfo" "Green"
-                }
-            }
-            elseif ($Settings.LogWindowTitles -and $p.MainWindowTitle -and $Procs[$p.Id].Title -ne $p.MainWindowTitle) {
-                Write-ActivityLog "ACTIVE TAB" "$($p.ProcessName).exe switched to: '$($p.MainWindowTitle)'" "Cyan"
-            }
-        }
+            $cmdLine = if ($cim -and $cim.CommandLine) { $cim.CommandLine.Trim() } else { "$pName.exe" }
+            if ($cmdLine.Length -gt 220) { $cmdLine = $cmdLine.Substring(0, 220) + "..." }
 
-        if ($Settings.LogApps) {
-            foreach ($OldId in $Procs.Keys) {
-                if (-not $CurrentProcs.ContainsKey($OldId)) {
-                    $ClosedName = $Procs[$OldId].Name
-                    if ($Settings.ExcludedProcesses -notcontains $ClosedName) {
-                        Write-ActivityLog "APP CLOSED" "$ClosedName.exe closed (PID: $OldId)" "Red"
-                    }
-                }
-            }
-        }
-        $Procs = $CurrentProcs
+            $friendlyDesc = Get-ProcessFriendlyDescription -ProcName $pName -IsHidden (-not $hasWindow)
 
-        # 2. Check for Websites Being Opened (DNS Requests)
-        if ($Settings.LogWebsites) {
-            foreach ($d in (Get-DnsClientCache -ErrorAction SilentlyContinue)) {
-                if ($d.Entry -and -not $DnsSeen.ContainsKey($d.Entry)) {
-                    if ($Settings.ExcludedDomains -notcontains $d.Entry) {
-                        Write-ActivityLog "WEBSITE" "Loading domain: $($d.Entry)" "Magenta"
-                    }
-                    $DnsSeen[$d.Entry] = $true
-                }
+            if ($hasWindow) {
+                Emit-ActivityEvent -Category "APP" -Badge "APP OPENED" `
+                    -Title "$pName.exe launched ('$($pInfo.Title)')" `
+                    -Subtitle "$friendlyDesc — started by $parentName" `
+                    -Details "PID: $newId | Parent: $parentName (PID $parentPid) | Cmd: $cmdLine" `
+                    -Severity "Success"
+            } elseif ($Settings.DeepBackgroundMode) {
+                Emit-ActivityEvent -Category "HIDDEN" -Badge "HIDDEN SPAWN" `
+                    -Title "Silent background process $pName.exe started by $parentName" `
+                    -Subtitle "$friendlyDesc (no visible window shown to user)" `
+                    -Details "PID: $newId | Spawned by: $parentName (PID $parentPid) | Cmd: $cmdLine" `
+                    -Severity "Hidden"
             }
         }
-
-        # 3. Check for Apps Connecting to the Internet
-        if ($Settings.LogInternetConnections) {
-            foreach ($c in (Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)) {
-                if ($c.RemoteAddress -notmatch "^(127\.|0\.|::1|fe80:|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)") {
-                    $Key = "$($c.OwningProcess)-$($c.RemoteAddress):$($c.RemotePort)"
-                    if (-not $NetSeen.ContainsKey($Key)) {
-                        $AppName = if ($CurrentProcs.ContainsKey($c.OwningProcess)) {
-                            $CurrentProcs[$c.OwningProcess].Name
-                        } elseif ($Settings.UseAdminFeatures) {
-                            (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-                        } else {
-                            $null
-                        }
-
-                        if ($AppName -and ($Settings.ExcludedProcesses -notcontains $AppName)) {
-                            $PortType = switch ($c.RemotePort) {
-                                443     { "HTTPS Secure Web" }
-                                80      { "HTTP Web" }
-                                53      { "DNS Lookup" }
-                                default { "Port $($c.RemotePort)" }
-                            }
-                            $DisplayIP = if ($Settings.FilterIPAddresses) { Format-IPFilter $c.RemoteAddress } else { $c.RemoteAddress }
-                            Write-ActivityLog "INTERNET" "$AppName.exe connected to $DisplayIP ($PortType)" "Yellow"
-                        }
-                        $NetSeen[$Key] = $true
-                    }
-                }
-            }
-        }
-
-        # 4. Check for Windows Services Starting or Stopping
-        if ($Settings.LogServices) {
-            foreach ($s in (Get-Service -ErrorAction SilentlyContinue)) {
-                if ($Services.ContainsKey($s.Name) -and $Services[$s.Name] -ne $s.Status) {
-                    Write-ActivityLog "SERVICE" "$($s.DisplayName) changed to $($s.Status)" "Blue"
-                    $Services[$s.Name] = $s.Status
-                }
-            }
-        }
-
-        Start-Sleep -Milliseconds $Settings.PollIntervalMs
     }
+
+    # Detect closed processes
+    foreach ($oldId in $Procs.Keys) {
+        if (-not $CurrentProcs.ContainsKey($oldId)) {
+            $oldProc = $Procs[$oldId]
+            $wasVisible = ($oldProc.Handle -ne 0 -and -not [string]::IsNullOrWhiteSpace($oldProc.Title))
+            if ($wasVisible) {
+                Emit-ActivityEvent -Category "APP" -Badge "APP CLOSED" `
+                    -Title "$($oldProc.Name).exe closed" `
+                    -Subtitle "Application exited (last window: '$($oldProc.Title)')" `
+                    -Details "PID: $oldId" `
+                    -Severity "Info"
+            } elseif ($Settings.DeepBackgroundMode -and $oldProc.Name -notin @("conhost", "backgroundTaskHost")) {
+                Emit-ActivityEvent -Category "HIDDEN" -Badge "BG EXIT" `
+                    -Title "Background process $($oldProc.Name).exe finished and exited" `
+                    -Subtitle (Get-ProcessFriendlyDescription -ProcName $oldProc.Name -IsHidden $true) `
+                    -Details "PID: $oldId" `
+                    -Severity "Info"
+            }
+        }
+    }
+    $Procs = $CurrentProcs
+
+    # --- B. DNS Domain Lookups & Hidden Telemetry Queries ---
+    foreach ($d in (Get-DnsClientCache)) {
+        if ($d.Entry -and -not $DnsSeen.ContainsKey($d.Entry)) {
+            $DnsSeen[$d.Entry] = $true
+            if ($d.Entry -notin @("localhost", "wpad")) {
+                $isTelemetry = ($d.Entry -match "telemetry|vortex|settings-win|data\.microsoft|events\.data|aria|metrics|analytics|crashlytics|diag")
+                $badge = if ($isTelemetry) { "BG TELEMETRY" } else { "DNS LOOKUP" }
+                $sub = if ($isTelemetry) {
+                    "Background telemetry or diagnostic domain resolved silently"
+                } else {
+                    "Domain name resolved to IP $(if ($d.Data) { $d.Data } else { 'address' })"
+                }
+                Emit-ActivityEvent -Category "DNS" -Badge $badge `
+                    -Title "Resolved domain: $($d.Entry)" `
+                    -Subtitle $sub `
+                    -Details "Record Data: $($d.Data) | TTL: $($d.TimeToLive)s" `
+                    -Severity $(if ($isTelemetry) { "Warning" } else { "Accent" })
+            }
+        }
+    }
+
+    # --- C. Outbound Connections & New Listening Ports ---
+    foreach ($c in (Get-NetTCPConnection)) {
+        if ($c.OwningProcess -eq $SelfPid -or $c.OwningProcess -eq $ParentSelfPid) { continue }
+
+        if ($c.State -eq 'Established' -or $c.State -eq 'SynSent') {
+            if ($c.RemoteAddress -notmatch "^(127\.|0\.|::1|fe80:)") {
+                $Key = "$($c.OwningProcess)-$($c.RemoteAddress):$($c.RemotePort)"
+                if (-not $NetSeen.ContainsKey($Key)) {
+                    $NetSeen[$Key] = $true
+                    $procInfo = $CurrentProcs[$c.OwningProcess]
+                    $appName = if ($procInfo) { $procInfo.Name } else { (Get-Process -Id $c.OwningProcess).ProcessName }
+                    if (-not $appName) { $appName = "System/Kernel (PID $($c.OwningProcess))" }
+
+                    $isHiddenApp = ($null -eq $procInfo -or [string]::IsNullOrWhiteSpace($procInfo.Title))
+                    $portDesc = switch ($c.RemotePort) {
+                        443  { "HTTPS Encrypted Traffic (Port 443)" }
+                        80   { "HTTP Unencrypted Web (Port 80)" }
+                        53   { "DNS Resolution (Port 53)" }
+                        853  { "DNS-over-TLS (Port 853)" }
+                        5228 { "Push Notification Channel (Port 5228)" }
+                        default { "TCP Port $($c.RemotePort)" }
+                    }
+
+                    $visibilityNote = if ($isHiddenApp) { "Hidden/background process" } else { "Active application" }
+                    Emit-ActivityEvent -Category "NETWORK" -Badge $(if ($isHiddenApp) { "BG NETWORK" } else { "INTERNET" }) `
+                        -Title "$appName.exe connected to $($c.RemoteAddress):$($c.RemotePort)" `
+                        -Subtitle "$visibilityNote communicating externally via $portDesc" `
+                        -Details "PID: $($c.OwningProcess) | Local: $($c.LocalAddress):$($c.LocalPort) -> Remote: $($c.RemoteAddress):$($c.RemotePort) ($($c.State))" `
+                        -Severity $(if ($isHiddenApp) { "Hidden" } else { "Info" })
+                }
+            }
+        }
+        elseif ($Settings.DeepBackgroundMode -and $c.State -eq 'Listen') {
+            $LKey = "$($c.OwningProcess)-$($c.LocalAddress):$($c.LocalPort)"
+            if (-not $ListenSeen.ContainsKey($LKey)) {
+                $ListenSeen[$LKey] = $true
+                $procInfo = $CurrentProcs[$c.OwningProcess]
+                $appName = if ($procInfo) { $procInfo.Name } else { (Get-Process -Id $c.OwningProcess).ProcessName }
+                if (-not $appName) { $appName = "PID $($c.OwningProcess)" }
+
+                Emit-ActivityEvent -Category "NETWORK" -Badge "PORT OPENED" `
+                    -Title "$appName.exe opened listening port $($c.LocalPort) on $($c.LocalAddress)" `
+                    -Subtitle "Process is now listening for incoming network connections on port $($c.LocalPort)" `
+                    -Details "PID: $($c.OwningProcess) | Bind Address: $($c.LocalAddress):$($c.LocalPort)" `
+                    -Severity "Warning"
+            }
+        }
+    }
+
+    # --- D. Windows Services State Changes ---
+    foreach ($s in (Get-Service)) {
+        $statusStr = [string]$s.Status
+        if ($Services.ContainsKey($s.Name) -and $Services[$s.Name].Status -ne $statusStr) {
+            $oldStatus = $Services[$s.Name].Status
+            $Services[$s.Name].Status = $statusStr
+            Emit-ActivityEvent -Category "SERVICE" -Badge "WINDOWS SVC" `
+                -Title "Service '$($s.DisplayName)' changed from $oldStatus to $statusStr" `
+                -Subtitle "Background Windows Service ($($s.Name)) transitioned state" `
+                -Details "Service Name: $($s.Name) | State: $oldStatus -> $statusStr" `
+                -Severity "Accent"
+        }
+    }
+
+    # --- E. Periodic Deep Checks (Scheduled Tasks, Startup Registry & Temp Files) every ~3 cycles ---
+    if ($Settings.DeepBackgroundMode -and ($LoopCounter % 3 -eq 0)) {
+        foreach ($t in (Get-ScheduledTask)) {
+            $tKey = "$($t.TaskPath)$($t.TaskName)"
+            $tState = [string]$t.State
+            if ($Tasks.ContainsKey($tKey) -and $Tasks[$tKey] -ne $tState) {
+                $oldState = $Tasks[$tKey]
+                $Tasks[$tKey] = $tState
+                if ($tState -eq "Running") {
+                    Emit-ActivityEvent -Category "TASK" -Badge "SCHED TASK" `
+                        -Title "Scheduled Task '$($t.TaskName)' started silently in the background" `
+                        -Subtitle "Triggered automatically by Windows Task Scheduler ($($t.TaskPath))" `
+                        -Details "Task Path: $tKey | State: $oldState -> $tState" `
+                        -Severity "Hidden"
+                } else {
+                    Emit-ActivityEvent -Category "TASK" -Badge "TASK DONE" `
+                        -Title "Scheduled Task '$($t.TaskName)' finished ($tState)" `
+                        -Subtitle "Background scheduled task completed execution" `
+                        -Details "Task Path: $tKey | State: $oldState -> $tState" `
+                        -Severity "Info"
+                }
+            }
+        }
+
+        # Check for new files dropped in Temp or Downloads
+        foreach ($dir in $WatchDirs) {
+            foreach ($f in (Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue)) {
+                if (-not $SeenFiles.ContainsKey($f.FullName)) {
+                    $SeenFiles[$f.FullName] = $true
+                    if ($f.Extension -match "^\.(exe|dll|ps1|bat|cmd|msi|vbs|scr|tmp)$") {
+                        $sizeKb = [math]::Round($f.Length / 1KB, 1)
+                        Emit-ActivityEvent -Category "SECURITY" -Badge "FILE DROPPED" `
+                            -Title "New $($f.Extension) file created in $(Split-Path $dir -Leaf): $($f.Name)" `
+                            -Subtitle "Background installer or process wrote a new file ($sizeKb KB)" `
+                            -Details "Full Path: $($f.FullName) | Size: $sizeKb KB" `
+                            -Severity "Warning"
+                    }
+                }
+            }
+        }
+
+        # Check for Startup Registry modifications
+        if (Test-Path $RunPath) {
+            $Props = Get-ItemProperty -Path $RunPath
+            foreach ($p in $Props.PSObject.Properties) {
+                if ($p.Name -notlike "PS*") {
+                    $val = [string]$p.Value
+                    if (-not $StartupSnapshot.ContainsKey($p.Name)) {
+                        $StartupSnapshot[$p.Name] = $val
+                        Emit-ActivityEvent -Category "SECURITY" -Badge "STARTUP MOD" `
+                            -Title "New Windows Startup entry registered: '$($p.Name)'" `
+                            -Subtitle "A program registered itself to launch automatically when you sign into Windows" `
+                            -Details "Registry: HKCU\...\Run\$($p.Name) = $val" `
+                            -Severity "Warning"
+                    }
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds $Settings.PollIntervalMs
 }
