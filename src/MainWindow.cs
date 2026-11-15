@@ -5,16 +5,17 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shell;
 using System.Windows.Threading;
 using Ellipse = System.Windows.Shapes.Ellipse;
 using WinForms = System.Windows.Forms;
@@ -30,6 +31,10 @@ namespace AngelSystemLoggerPro
         private WinForms.NotifyIcon _trayIcon;
         private WinForms.ToolStripMenuItem _trayPauseMenu;
         private bool _forceExit = false;
+        private bool _shownTrayTip = false;
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
         // Collections & Views
         private readonly ObservableCollection<ActivityEventItem> _allEvents = new ObservableCollection<ActivityEventItem>();
@@ -136,26 +141,21 @@ namespace AngelSystemLoggerPro
             _exeDir = Path.GetDirectoryName(exePath) ?? AppDomain.CurrentDomain.BaseDirectory;
             _settings = settings;
 
-            this.Title = "Angel Core Logger";
-            this.Width = 1220;
-            this.Height = 760;
-            this.MinWidth = 960;
-            this.MinHeight = 600;
-            this.WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            this.WindowStyle = WindowStyle.None;
-            this.AllowsTransparency = true;
-            this.Background = Brushes.Transparent;
+            this.Title = "Angel Core Logger v3.0";
+            Rect workArea = SystemParameters.WorkArea;
+            double targetW = Math.Min(1180, Math.Max(780, workArea.Width - 60));
+            double targetH = Math.Min(644, Math.Max(480, workArea.Height - 28));
+            this.Width = targetW;
+            this.Height = targetH;
+            this.MinWidth = Math.Min(880, Math.Max(640, workArea.Width - 80));
+            this.MinHeight = Math.Min(480, Math.Max(400, workArea.Height - 60));
+            this.WindowStartupLocation = WindowStartupLocation.Manual;
+            this.Left = workArea.Left + Math.Max(0, (workArea.Width - targetW) / 2.0);
+            this.Top = workArea.Top + Math.Max(0, (workArea.Height - targetH) / 2.0);
+            this.WindowStyle = WindowStyle.SingleBorderWindow;
+            this.ResizeMode = ResizeMode.CanResize;
+            this.Background = ProcessActionHelper.MakeFrozenBrush("#18181B");
             this.FontFamily = new FontFamily("Segoe UI");
-
-            WindowChrome chrome = new WindowChrome
-            {
-                CaptionHeight = 38,
-                CornerRadius = new CornerRadius(10),
-                GlassFrameThickness = new Thickness(0),
-                ResizeBorderThickness = new Thickness(6),
-                UseAeroCaptionButtons = false
-            };
-            WindowChrome.SetWindowChrome(this, chrome);
 
             InitializeWindowLayout();
             SetupCollectionViews();
@@ -222,14 +222,14 @@ namespace AngelSystemLoggerPro
                         }
 
                         FrameworkElement content = this.Content as FrameworkElement;
-                        if (content != null && this.ActualWidth > 0 && this.ActualHeight > 0)
+                        if (content != null && content.ActualWidth > 0 && content.ActualHeight > 0)
                         {
                             content.InvalidateMeasure();
                             content.UpdateLayout();
                             Dispatcher.Invoke(new Action(() => { }), DispatcherPriority.Render);
 
                             RenderTargetBitmap rtb = new RenderTargetBitmap(
-                                (int)this.ActualWidth, (int)this.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                                (int)content.ActualWidth, (int)content.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                             rtb.Render(content);
                             PngBitmapEncoder enc = new PngBitmapEncoder();
                             enc.Frames.Add(BitmapFrame.Create(rtb));
@@ -245,6 +245,35 @@ namespace AngelSystemLoggerPro
                 };
                 snapTimer.Start();
             }
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            ApplyDarkNativeWindowFrame();
+        }
+
+        private void ApplyDarkNativeWindowFrame()
+        {
+            try
+            {
+                IntPtr hwnd = new WindowInteropHelper(this).Handle;
+                if (hwnd == IntPtr.Zero) return;
+
+                int dark = 1;
+                DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int)); // DWMWA_USE_IMMERSIVE_DARK_MODE
+                DwmSetWindowAttribute(hwnd, 19, ref dark, sizeof(int)); // Win10 fallback
+
+                int captionColor = 0x00241F1F; // #1F1F24 in COLORREF (0x00BBGGRR)
+                DwmSetWindowAttribute(hwnd, 35, ref captionColor, sizeof(int)); // DWMWA_CAPTION_COLOR (Win11)
+
+                int textColor = 0x00F5F4F4; // #F4F4F5
+                DwmSetWindowAttribute(hwnd, 36, ref textColor, sizeof(int)); // DWMWA_TEXT_COLOR (Win11)
+
+                int borderColor = 0x00443838; // #383844
+                DwmSetWindowAttribute(hwnd, 34, ref borderColor, sizeof(int)); // DWMWA_BORDER_COLOR (Win11)
+            }
+            catch { }
         }
 
         public void BringToForeground()
@@ -312,8 +341,24 @@ namespace AngelSystemLoggerPro
             if (!_forceExit && _settings.MinimizeToTrayOnClose && _trayIcon != null)
             {
                 e.Cancel = true;
-                this.Hide();
-                this.ShowInTaskbar = false;
+                HideToTrayWithHint();
+            }
+        }
+
+        private void HideToTrayWithHint()
+        {
+            this.Hide();
+            this.ShowInTaskbar = false;
+            if (_trayIcon != null && !_shownTrayTip)
+            {
+                _shownTrayTip = true;
+                try
+                {
+                    _trayIcon.ShowBalloonTip(2200, "Angel Core Logger",
+                        "Still monitoring locally in the System Tray. Double-click the icon to reopen or right-click to exit.",
+                        WinForms.ToolTipIcon.Info);
+                }
+                catch { }
             }
         }
 
@@ -333,7 +378,7 @@ namespace AngelSystemLoggerPro
             string xaml = @"
 <Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
         xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
-        CornerRadius='10' Background='#18181B' BorderBrush='#3F3F4B' BorderThickness='1.2' ClipToBounds='True'>
+        Background='#18181B' BorderBrush='#27272E' BorderThickness='0,1,0,0'>
 
     <Border.Resources>
         <Style x:Key='PillSwitchStyle' TargetType='ToggleButton'>
@@ -486,39 +531,32 @@ namespace AngelSystemLoggerPro
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height='38'/>
-            <RowDefinition Height='52'/>
+            <RowDefinition Height='34'/>
+            <RowDefinition Height='48'/>
             <RowDefinition Height='Auto'/>
             <RowDefinition Height='*'/>
-            <RowDefinition Height='46'/>
+            <RowDefinition Height='44'/>
         </Grid.RowDefinitions>
 
-        <!-- 1. CUSTOM TITLE BAR WITH LIVE VITALS -->
-        <Border Grid.Row='0' Background='#1F1F24' BorderBrush='#2A2A32' BorderThickness='0,0,0,1'>
+        <!-- 1. LIVE HARDWARE VITALS & PRIVACY STATUS STRIP -->
+        <Border Grid.Row='0' Background='#1B1B20' BorderBrush='#27272E' BorderThickness='0,0,0,1' Padding='14,0'>
             <Grid>
-                <StackPanel Orientation='Horizontal' HorizontalAlignment='Left' VerticalAlignment='Center' Margin='14,0,0,0'>
+                <StackPanel Orientation='Horizontal' HorizontalAlignment='Left' VerticalAlignment='Center'>
                     <Ellipse Width='8' Height='8' Fill='#34D399' Margin='0,0,8,0'/>
-                    <TextBlock Text='Angel Core Logger' Foreground='#F4F4F5' FontSize='13' FontWeight='SemiBold' VerticalAlignment='Center'/>
+                    <TextBlock Text='Real-Time Local System Telemetry' Foreground='#D4D4D8' FontSize='12' FontWeight='SemiBold' VerticalAlignment='Center'/>
                     <Border Background='#272730' BorderBrush='#383844' BorderThickness='1' CornerRadius='4' Padding='5,1' Margin='8,0,0,0' VerticalAlignment='Center'>
-                        <TextBlock Text='v3.0' FontSize='10' FontWeight='Bold' Foreground='#D5A449'/>
+                        <TextBlock Text='v3.0.2' FontSize='10' FontWeight='Bold' Foreground='#D5A449'/>
                     </Border>
                     <Border x:Name='PrivBadge' Background='#22222A' BorderBrush='#33333E' BorderThickness='1' CornerRadius='4' Padding='6,1' Margin='6,0,0,0' VerticalAlignment='Center'>
                         <TextBlock x:Name='PrivBadgeText' Text='STANDARD MODE' FontSize='9.5' FontWeight='Bold' Foreground='#A1A1AA'/>
                     </Border>
                 </StackPanel>
 
-                <!-- Center-Right Live Vitals -->
-                <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,162,0'>
-                    <Border Background='#18181C' BorderBrush='#2E2E36' BorderThickness='1' CornerRadius='5' Padding='10,3'>
+                <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Center'>
+                    <Border Background='#151519' BorderBrush='#2E2E36' BorderThickness='1' CornerRadius='5' Padding='10,2.5' Margin='0,0,8,0' VerticalAlignment='Center'>
                         <TextBlock x:Name='VitalsText' Text='CPU 0%  •  RAM 0%  •  Mic: Idle  •  Cam: Idle' Foreground='#A1A1AA' FontSize='11' FontFamily='Consolas'/>
                     </Border>
-                </StackPanel>
-
-                <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Center' WindowChrome.IsHitTestVisibleInChrome='True'>
-                    <Button x:Name='TrayBtn' Style='{StaticResource CaptionBtn}' Content='▾' ToolTip='Hide to System Tray (keeps monitoring)'/>
-                    <Button x:Name='MinBtn' Style='{StaticResource CaptionBtn}' Content='—' ToolTip='Minimize'/>
-                    <Button x:Name='MaxBtn' Style='{StaticResource CaptionBtn}' Content='▢' ToolTip='Maximize / Restore'/>
-                    <Button x:Name='CloseBtn' Style='{StaticResource CaptionBtn}' Content='✕' ToolTip='Close / Send to Tray'/>
+                    <Button x:Name='TrayBtn' Style='{StaticResource DarkPillBtn}' Content='▾ Send to Tray' FontSize='11' Padding='9,2.5' ToolTip='Hide window to System Tray while keeping monitoring active'/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -541,7 +579,7 @@ namespace AngelSystemLoggerPro
                 </StackPanel>
 
                 <!-- Search Input with Placeholder -->
-                <Border Grid.Column='1' Margin='10,0' Height='32' MinWidth='220' MaxWidth='380' HorizontalAlignment='Stretch' CornerRadius='7' Background='#151519' BorderBrush='#2E2E37' BorderThickness='1' VerticalAlignment='Center'>
+                <Border Grid.Column='1' Margin='10,0' Height='32' MinWidth='150' MaxWidth='380' HorizontalAlignment='Stretch' CornerRadius='7' Background='#151519' BorderBrush='#2E2E37' BorderThickness='1' VerticalAlignment='Center'>
                     <Grid>
                         <TextBlock x:Name='SearchWatermark' Text='Search process, domain, PID, path...' Foreground='#52525B' FontSize='12'
                                    VerticalAlignment='Center' Margin='10,0,26,0' IsHitTestVisible='False'/>
@@ -1117,7 +1155,7 @@ namespace AngelSystemLoggerPro
 
                 <StackPanel Grid.Column='0' Orientation='Horizontal' VerticalAlignment='Center'>
                     <TextBlock x:Name='DiskFreeText' Text='0.0 GB free' Foreground='#A1A1AA' FontSize='12' FontFamily='Consolas' VerticalAlignment='Center'/>
-                    <TextBlock Text='  •  In-Memory Only (No Disk Logs)' Foreground='#34D399' FontSize='11.5' VerticalAlignment='Center' Margin='4,0,12,0'/>
+                    <TextBlock Text='  •  RAM-Only (No Disk Logs)' Foreground='#34D399' FontSize='11.5' VerticalAlignment='Center' Margin='4,0,10,0'/>
                     <Button x:Name='SettingsBtn' Style='{StaticResource DarkPillBtn}' Content='⚙ Settings' Padding='10,4'/>
                 </StackPanel>
 
@@ -1171,10 +1209,7 @@ namespace AngelSystemLoggerPro
                 _privBadgeText.Foreground = ProcessActionHelper.MakeFrozenBrush("#34D399");
             }
 
-            ((Button)root.FindName("TrayBtn")).Click += (s, e) => { this.Hide(); this.ShowInTaskbar = false; };
-            ((Button)root.FindName("MinBtn")).Click += (s, e) => this.WindowState = WindowState.Minimized;
-            ((Button)root.FindName("MaxBtn")).Click += (s, e) => ToggleMaximize();
-            ((Button)root.FindName("CloseBtn")).Click += (s, e) => this.Close();
+            ((Button)root.FindName("TrayBtn")).Click += (s, e) => HideToTrayWithHint();
 
             // Navigation tabs & views
             _navActivityBtn = (Button)root.FindName("NavActivityBtn");
@@ -1380,11 +1415,6 @@ namespace AngelSystemLoggerPro
 
             _liveModeBtn.Click += (s, e) => SetPauseState(false);
             _pauseModeBtn.Click += (s, e) => SetPauseState(true);
-        }
-
-        private void ToggleMaximize()
-        {
-            this.WindowState = (this.WindowState == WindowState.Maximized) ? WindowState.Normal : WindowState.Maximized;
         }
 
         private void SwitchMainTab(string tab)

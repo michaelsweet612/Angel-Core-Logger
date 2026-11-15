@@ -33,8 +33,9 @@ namespace AngelSystemLoggerPro
             _onRestartAdmin = onRestartAdmin;
 
             this.Title = "Angel Core Logger Settings";
-            this.Width = 520;
-            this.Height = 520;
+            Rect wa = SystemParameters.WorkArea;
+            this.Width = Math.Min(520, Math.Max(400, wa.Width - 40));
+            this.Height = Math.Min(520, Math.Max(380, wa.Height - 40));
             this.WindowStartupLocation = WindowStartupLocation.CenterOwner;
             this.WindowStyle = WindowStyle.None;
             this.AllowsTransparency = true;
