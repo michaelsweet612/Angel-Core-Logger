@@ -1,45 +1,63 @@
 # Angel-Core-Logger
 
-A friendly, 100% local and private Windows desktop application powered by a live **PowerShell Deep Background Telemetry Engine** that reveals everything happening on your computer—including hidden background activity most Windows users never see.
+A 100% local, privacy-first Windows desktop application (`AngelSystemLoggerPro.exe`) powered by a live **PowerShell Deep Telemetry Engine** that exposes hidden background processes, network sockets, scheduled tasks, startup persistence, and microphone/webcam/location hardware access in real time.
 
 ---
 
-## What It Shows You (Visible & Hidden Background Activity)
+## Key Capabilities (v3.0)
 
-- **Hidden Background Process Spawns (`HIDDEN SPAWN` / `HIDDEN NET BG`)**:
-  - Detects processes launching silently with no taskbar window (`svchost`, `dllhost`, `conhost`, `rundll32`, `wmiprvse`, `MoUsoCoreWorker`, `CompatTelRunner`, updaters, and background helpers).
-  - Reveals the **Parent Process chain** (which process spawned it) and the **full Command-Line arguments**, plus a plain-English explanation of what the component does.
-- **Silent Windows Scheduled Tasks (`SCHED TASK` / `BG TASKS`)**:
-  - Watches Windows Task Scheduler in real time and alerts you whenever a background task triggers or completes behind the scenes.
-- **Background Network & Listening Ports (`BG NETWORK` / `INTERNET` / `PORT OPENED`)**:
-  - Shows which hidden or visible processes are talking to external servers (`HTTPS 443`, `HTTP 80`, `DNS 53`, etc.) or opening local listening ports.
-- **DNS Lookups & Hidden Telemetry Queries (`DNS LOOKUP` / `BG TELEMETRY`)**:
-  - Logs every domain resolved in the Windows DNS cache and highlights background diagnostic/telemetry endpoints.
-- **Startup Persistence & Dropped Files (`STARTUP MOD` / `FILE DROPPED`)**:
-  - Monitors `HKCU\...\Run` startup registrations and watches `%TEMP%` and `Downloads` for newly dropped `.exe`, `.dll`, `.ps1`, `.bat`, or `.msi` files.
-- **Foreground Apps, Active Browser/Window Tabs & Windows Services (`APP OPENED`, `ACTIVE TAB`, `WINDOWS SVC`)**:
-  - Tracks opened/closed desktop apps, active window title switches, and Windows Service state changes.
+### 1. Live Activity Stream & Event Inspector (`Live Feed`)
+- **Clickable Category Filter Cards**: Filter between **All Events**, **Hidden BG**, **Network**, **DNS & Web**, **Apps & Tabs**, and **Privacy & Sys** with matching live counters.
+- **Right-Side Event Inspector**: Click any activity card to examine its verified publisher badge (`✓ Signed Publisher` / `⚠ Unsigned`), **Parent → Child process tree**, executable path, remote endpoint / hostname, and full command line (with automatic **UTF-16LE `-EncodedCommand` Base64 decoding**).
+- **Quick Actions**: **Open File Folder**, **Copy Report**, **Mute Process**, or **End Process** directly from the Inspector or Hidden Process bar.
+- **Live Title-Bar Vitals**: Displays real-time **CPU %**, **RAM %**, **Mic status**, **Webcam status**, and **Standard / Admin Elevated** mode.
 
----
+### 2. Windowless Background X-Ray (`Hidden BG`)
+- Inventories every process running without a visible taskbar window.
+- Maps `svchost.exe` hosts to their active **Windows Service** names (`WinDefend`, `wuauserv`, `BITS`, `DiagTrack`, etc.).
+- Verifies digital signatures quickly via embedded PE certificates and Windows Authenticode catalogs, surfacing unsigned or network-active background processes first with checkboxes to show **Only with external network** or **Hide Microsoft processes**.
 
-## Friendly Dark Desktop UI
+### 3. External Network, Listening Ports & Hardware Privacy (`Net & Privacy`)
+- **Outbound Sockets (`Outbound`)**: Parses live external `ESTABLISHED` / `SYN_SENT` connections with reverse DNS & network provider identification (`Cloudflare`, `Microsoft / Azure`, `Google LLC`, `AWS / CloudFront`, `Akamai`, `Fastly`, `GitHub`, `Valve / Steam`) and port meaning (`HTTPS 443`, `HTTP 80`, `DNS 53`, `RDP 3389`, etc.).
+- **Open Listening Ports (`Listening Ports`)**: Lists every process bound locally waiting for incoming traffic.
+- **Hardware Privacy Monitor (`Mic / Cam / Loc`)**: Polls Windows `CapabilityAccessManager\ConsentStore` for **Microphone**, **Webcam**, and **Location** access—raising immediate alerts and live header indicators whenever any app activates or touches hardware sensors.
 
-- **Category Filter Dropdown (`All activity ⌄`)**: Instantly filter between *All activity*, *Hidden background*, *Network & connections*, *DNS & websites*, *Apps & windows*, *Tasks & services*, and *Security & startup*.
-- **Live Search Box**: Filter the activity stream in real time by process name, domain, PID, port, or command-line flag.
-- **`+ Deep Background Scan` Button**: Runs an on-demand PowerShell X-Ray scan of hidden windowless processes holding active internet connections, running scheduled tasks, cached DNS domains, and registered Windows startup items.
-- **Bottom Privacy & Control Bar**:
-  - **Mask IPs (`###`)**: ON by default — masks IPv4 and IPv6 digits with `#` in both the live window and saved log files.
-  - **Deep Hidden Mode**: ON by default — toggles hidden background process, telemetry, and scheduled task events.
-  - **Startup**: ON by default — registers `AngelSystemLoggerPro.exe` in Windows Startup (`Task Manager → Startup apps`).
-  - **Live / Pause**: Pause the visual feed at any time to inspect events without losing background file logs.
+### 4. Persistence & Integrity Watcher (`Startup & Tasks`)
+- **Startup Apps**: Audits `HKCU` and `HKLM` `Run` / `RunOnce` entries plus live alerts whenever a program adds a new Windows auto-start entry.
+- **Running Tasks**: Highlights active **Windows Scheduled Tasks** executing silently behind the scenes (`Active`, triggers, descriptions).
+- **Temp / Drops**: Monitors `%TEMP%` and `Downloads` during the session for newly written executables and scripts (`.exe`, `.dll`, `.ps1`, `.bat`, `.cmd`, `.msi`, `.vbs`, `.scr`, `.tmp`).
 
 ---
 
-## Quick Start
+## Controls, Tray & Privacy
 
-1. **Launch the Desktop App**: Double-click **`AngelSystemLoggerPro.exe`**.
-2. **Local Logs Folder**: Click **`Open Log Folder`** inside the window (or browse to `Documents\LocalActivityLogs\ActivityLog_YYYY-MM-DD.log`).
-3. **Rebuild Anytime**:
+- **Mask IPs (`###`)**: Dynamically masks or reveals IPv4 and IPv6 addresses across the live feed, Inspector, Hidden BG, Network tabs, and local `.log` disk files (`Documents\LocalActivityLogs\ActivityLog_YYYY-MM-DD.log`).
+- **Deep Hidden**: Toggles deep telemetry events (windowless background spawns, scheduled tasks, diagnostics, listening ports).
+- **Startup**: Registers or removes `AngelSystemLoggerPro.exe` from Windows Startup (`HKCU\...\Run`).
+- **System Tray (`NotifyIcon`)**: Minimize or close to the tray while keeping background monitoring active; double-click the tray icon to bring the window back or right-click for **Run Deep X-Ray Scan**, **Pause/Resume Monitoring**, and **Open Log Folder**.
+- **Settings (`⚙ Settings`)**: Configure auto-save logs, start minimized, tray behavior, muted process exclusions, full `.txt` system report export, and **Restart as Administrator** for protected system command lines.
+
+---
+
+## Quick Start & Build
+
+1. **Run Directly**: Double-click **`AngelSystemLoggerPro.exe`** (automatically extracts the bundled telemetry script if run standalone).
+2. **Command-Line Flags**:
+   - `--minimized` / `--tray` — launch hidden in the System Tray.
+   - `--install-startup` / `--remove-startup` — manage the Windows Startup registry key.
+3. **Rebuild from Source** (uses Windows built-in `.NET Framework v4.0` C# compiler — zero external SDKs required):
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Exe.ps1
    ```
+
+---
+
+## Project Structure
+
+- `Start-LocalLogger.ps1` — PowerShell real-time system telemetry collector & standalone CLI monitor.
+- `src/Program.cs` — Single-instance launcher, named-pipe window wakeup, and CLI switch handler.
+- `src/MainWindow.cs` — WPF dark desktop window, tray icon controller, live event feed, and Inspector views.
+- `src/Models.cs` — Persistent settings and observable telemetry view models.
+- `src/Helpers.cs` — Async reverse DNS resolver, IP privacy masker, CPU/RAM counters, and process/startup utilities.
+- `src/SettingsDialog.cs` — Modal preferences, muted-process editor, admin elevation, and report exporter.
+- `Build-Exe.ps1` — Generates `.ico` artwork, embeds `Start-LocalLogger.ps1`, and compiles `AngelSystemLoggerPro.exe`.
