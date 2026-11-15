@@ -38,9 +38,7 @@ $Settings = [ordered]@{
     FilterIPAddresses      = (-not $NoFilterIP.IsPresent)
     DeepBackgroundMode     = (-not $NoDeepBackground.IsPresent)
     UseAdminFeatures       = $AdminMode.IsPresent
-    EnableFileLogging      = (-not $NoFileLog.IsPresent)
-    LogDirectory           = Join-Path $env:USERPROFILE "Documents\LocalActivityLogs"
-    LogFilePrefix          = "ActivityLog"
+    EnableFileLogging      = $false
     PollIntervalMs         = $PollMs
     ExcludedProcesses      = @("AngelSystemLoggerPro", "Start-LocalLogger")
 }
@@ -57,7 +55,6 @@ function Sync-ExternalSettings {
                 if ($null -ne $raw) {
                     if ($null -ne $raw.MaskIp)          { $Settings.FilterIPAddresses  = [bool]$raw.MaskIp }
                     if ($null -ne $raw.DeepHiddenMode)  { $Settings.DeepBackgroundMode = [bool]$raw.DeepHiddenMode }
-                    if ($null -ne $raw.AutoSaveLogs)    { $Settings.EnableFileLogging  = [bool]$raw.AutoSaveLogs }
                     if ($null -ne $raw.ExcludedProcesses) {
                         $merged = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
                         $merged.Add("AngelSystemLoggerPro") | Out-Null
@@ -76,15 +73,6 @@ function Sync-ExternalSettings {
 }
 
 Sync-ExternalSettings
-
-if ($Settings.EnableFileLogging -and -not (Test-Path $Settings.LogDirectory)) {
-    New-Item -ItemType Directory -Path $Settings.LogDirectory -Force | Out-Null
-}
-
-function Get-LogFilePath {
-    $DateStamp = Get-Date -Format "yyyy-MM-dd"
-    return Join-Path $Settings.LogDirectory "$($Settings.LogFilePrefix)_$DateStamp.log"
-}
 
 function Format-IPFilter ([string]$Text) {
     if (-not $Settings.FilterIPAddresses -or [string]::IsNullOrEmpty($Text)) {
@@ -363,15 +351,6 @@ function Emit-ActivityEvent {
     $Now = Get-Date
     $TimeFull = $Now.ToString("yyyy-MM-dd HH:mm:ss")
     $TimeShort = $Now.ToString("HH:mm:ss")
-
-    if ($Settings.EnableFileLogging) {
-        $LogTitle    = Format-IPFilter $Title
-        $LogSubtitle = Format-IPFilter $Subtitle
-        $LogDetails  = Format-IPFilter $Details
-        $PaddedBadge = $Badge.PadRight(13)
-        $LogLine = "[$TimeFull] [$PaddedBadge] $LogTitle | $LogSubtitle $(if ($LogDetails) { "($LogDetails)" })"
-        Add-Content -Path (Get-LogFilePath) -Value $LogLine -Encoding UTF8 -ErrorAction SilentlyContinue
-    }
 
     if ($GuiStream) {
         # Send UNMASKED values to GUI so the interactive Mask IPs switch can reveal/mask live
@@ -848,7 +827,7 @@ $IsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsI
 Emit-ActivityEvent -Category "SYSTEM" -Badge "ENGINE READY" `
     -Title "PowerShell Deep Telemetry Engine online ($($Procs.Count) active processes indexed)" `
     -Subtitle "Monitoring windowless background spawns, Mic/Webcam/Location privacy, sockets, DNS, tasks & persistence ($(if ($IsElevated) { 'Elevated Admin' } else { 'Standard Mode' }))." `
-    -Details "Local Log: $(Get-LogFilePath)" `
+    -Details "Privacy Mode: 100% In-Memory (zero activity logs written to disk)" `
     -Severity "Success" `
     -Publisher "Angel Core Logger"
 

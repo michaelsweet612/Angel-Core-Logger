@@ -17,7 +17,6 @@ namespace AngelSystemLoggerPro
         private readonly Action _onExportReport;
         private readonly Action _onRestartAdmin;
 
-        private CheckBox _autoSaveCheck;
         private CheckBox _startMinCheck;
         private CheckBox _closeToTrayCheck;
         private ListBox _excludedListBox;
@@ -35,7 +34,7 @@ namespace AngelSystemLoggerPro
 
             this.Title = "Angel Core Logger Settings";
             this.Width = 520;
-            this.Height = 560;
+            this.Height = 520;
             this.WindowStartupLocation = WindowStartupLocation.CenterOwner;
             this.WindowStyle = WindowStyle.None;
             this.AllowsTransparency = true;
@@ -119,8 +118,8 @@ namespace AngelSystemLoggerPro
                 <TextBlock Text='BEHAVIOR &amp; TRAY' Foreground='#D5A449' FontSize='10.5' FontWeight='Bold' Margin='0,0,0,8'/>
                 <Border Background='#202026' BorderBrush='#2E2E36' BorderThickness='1' CornerRadius='8' Padding='14,12' Margin='0,0,0,14'>
                     <StackPanel>
-                        <CheckBox x:Name='AutoSaveCheck' Content='Save activity logs locally to Documents\LocalActivityLogs'
-                                  Foreground='#E4E4E7' FontSize='12.5' Margin='0,0,0,10'/>
+                        <TextBlock Text='In-Memory Privacy: Activity stays strictly in RAM and zero automatic log documents are written to disk.'
+                                   Foreground='#34D399' FontSize='11.5' TextWrapping='Wrap' Margin='0,0,0,10'/>
                         <CheckBox x:Name='StartMinCheck' Content='Start minimized to System Tray when Windows boots'
                                   Foreground='#E4E4E7' FontSize='12.5' Margin='0,0,0,10'/>
                         <CheckBox x:Name='CloseToTrayCheck' Content='Keep running in System Tray when clicking Close (✕)'
@@ -128,14 +127,14 @@ namespace AngelSystemLoggerPro
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text='PRIVILEGES &amp; REPORTS' Foreground='#D5A449' FontSize='10.5' FontWeight='Bold' Margin='0,0,0,8'/>
+                <TextBlock Text='PRIVILEGES &amp; SNAPSHOTS' Foreground='#D5A449' FontSize='10.5' FontWeight='Bold' Margin='0,0,0,8'/>
                 <Border Background='#202026' BorderBrush='#2E2E36' BorderThickness='1' CornerRadius='8' Padding='14,12' Margin='0,0,0,14'>
                     <StackPanel>
                         <TextBlock x:Name='PrivilegeDesc' Text='Running in Standard Mode. Elevate as Administrator to reveal protected system command lines.'
                                    Foreground='#A1A1AA' FontSize='12' TextWrapping='Wrap' Margin='0,0,0,10'/>
                         <StackPanel Orientation='Horizontal'>
                             <Button x:Name='ElevateBtn' Style='{StaticResource DlgDarkBtn}' Content='Restart as Administrator' Margin='0,0,10,0'/>
-                            <Button x:Name='ExportBtn' Style='{StaticResource DlgDarkBtn}' Content='Export Full Report (.txt)'/>
+                            <Button x:Name='ExportBtn' Style='{StaticResource DlgDarkBtn}' Content='Save Snapshot As... (.txt)'/>
                         </StackPanel>
                     </StackPanel>
                 </Border>
@@ -183,7 +182,6 @@ namespace AngelSystemLoggerPro
             Button closeX = (Button)root.FindName("DlgCloseX");
             closeX.Click += (s, e) => this.Close();
 
-            _autoSaveCheck = (CheckBox)root.FindName("AutoSaveCheck");
             _startMinCheck = (CheckBox)root.FindName("StartMinCheck");
             _closeToTrayCheck = (CheckBox)root.FindName("CloseToTrayCheck");
 
@@ -248,7 +246,6 @@ namespace AngelSystemLoggerPro
 
         private void PopulateFields()
         {
-            _autoSaveCheck.IsChecked = _settings.AutoSaveLogs;
             _startMinCheck.IsChecked = _settings.StartMinimizedToTray;
             _closeToTrayCheck.IsChecked = _settings.MinimizeToTrayOnClose;
 
@@ -261,7 +258,6 @@ namespace AngelSystemLoggerPro
 
         private void SaveAndClose()
         {
-            _settings.AutoSaveLogs = _autoSaveCheck.IsChecked == true;
             _settings.StartMinimizedToTray = _startMinCheck.IsChecked == true;
             _settings.MinimizeToTrayOnClose = _closeToTrayCheck.IsChecked == true;
 

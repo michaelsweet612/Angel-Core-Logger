@@ -11,7 +11,6 @@ namespace AngelSystemLoggerPro
     {
         public bool MaskIp { get; set; }
         public bool DeepHiddenMode { get; set; }
-        public bool AutoSaveLogs { get; set; }
         public bool StartMinimizedToTray { get; set; }
         public bool MinimizeToTrayOnClose { get; set; }
         public List<string> ExcludedProcesses { get; set; }
@@ -20,7 +19,6 @@ namespace AngelSystemLoggerPro
         {
             MaskIp = true;
             DeepHiddenMode = true;
-            AutoSaveLogs = true;
             StartMinimizedToTray = false;
             MinimizeToTrayOnClose = true;
             ExcludedProcesses = new List<string> { "AngelSystemLoggerPro", "Start-LocalLogger" };

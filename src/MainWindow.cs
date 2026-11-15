@@ -25,7 +25,6 @@ namespace AngelSystemLoggerPro
     {
         private readonly string _exePath;
         private readonly string _exeDir;
-        private readonly string _logDir;
         private readonly AppSettings _settings;
         private Process _psEngineProcess;
         private WinForms.NotifyIcon _trayIcon;
@@ -135,9 +134,7 @@ namespace AngelSystemLoggerPro
         {
             _exePath = exePath;
             _exeDir = Path.GetDirectoryName(exePath) ?? AppDomain.CurrentDomain.BaseDirectory;
-            _logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LocalActivityLogs");
             _settings = settings;
-            Directory.CreateDirectory(_logDir);
 
             this.Title = "Angel Core Logger";
             this.Width = 1220;
@@ -284,7 +281,10 @@ namespace AngelSystemLoggerPro
                     Dispatcher.BeginInvoke(new Action(() => SetPauseState(!_isPaused)));
                 });
                 menu.Items.Add(_trayPauseMenu);
-                menu.Items.Add("Open Log Folder", null, (s, e) => OpenLogFolder());
+                menu.Items.Add("Clear In-Memory Feed", null, (s, e) =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() => ClearLiveFeed()));
+                });
                 menu.Items.Add(new WinForms.ToolStripSeparator());
                 menu.Items.Add("Exit Completely", null, (s, e) =>
                 {
@@ -562,7 +562,6 @@ namespace AngelSystemLoggerPro
                         </StackPanel>
                     </Border>
 
-                    <Button x:Name='OpenLogsBtn' Style='{StaticResource DarkPillBtn}' Content='Open Logs' Margin='0,0,7,0' ToolTip='Open Documents\LocalActivityLogs folder'/>
                     <Button x:Name='DeepScanBtn' Style='{StaticResource GoldActionBtn}' Content='+ Deep Scan' ToolTip='Force immediate PowerShell Deep X-Ray scan of hidden processes, sockets, privacy &amp; tasks'/>
                 </StackPanel>
             </Grid>
@@ -1118,7 +1117,7 @@ namespace AngelSystemLoggerPro
 
                 <StackPanel Grid.Column='0' Orientation='Horizontal' VerticalAlignment='Center'>
                     <TextBlock x:Name='DiskFreeText' Text='0.0 GB free' Foreground='#A1A1AA' FontSize='12' FontFamily='Consolas' VerticalAlignment='Center'/>
-                    <TextBlock Text='  •  100% Local' Foreground='#71717A' FontSize='11.5' VerticalAlignment='Center' Margin='4,0,12,0'/>
+                    <TextBlock Text='  •  In-Memory Only (No Disk Logs)' Foreground='#34D399' FontSize='11.5' VerticalAlignment='Center' Margin='4,0,12,0'/>
                     <Button x:Name='SettingsBtn' Style='{StaticResource DarkPillBtn}' Content='⚙ Settings' Padding='10,4'/>
                 </StackPanel>
 
@@ -1127,7 +1126,7 @@ namespace AngelSystemLoggerPro
 
                     <TextBlock Text='Mask IPs (###)' Foreground='#A1A1AA' FontSize='12' VerticalAlignment='Center' Margin='0,0,7,0'/>
                     <ToggleButton x:Name='IpMaskToggle' Style='{StaticResource PillSwitchStyle}' IsChecked='True' VerticalAlignment='Center' Margin='0,0,14,0'
-                                  ToolTip='Toggle real-time IP masking across all tabs and saved logs'/>
+                                  ToolTip='Toggle real-time IP masking across all views and exported snapshots'/>
 
                     <TextBlock Text='Deep Hidden' Foreground='#A1A1AA' FontSize='12' VerticalAlignment='Center' Margin='0,0,7,0'/>
                     <ToggleButton x:Name='DeepBgToggle' Style='{StaticResource PillSwitchStyle}' IsChecked='True' VerticalAlignment='Center' Margin='0,0,14,0'
@@ -1210,7 +1209,6 @@ namespace AngelSystemLoggerPro
             };
             _searchClearBtn.Click += (s, e) => { _searchBox.Text = ""; };
 
-            ((Button)root.FindName("OpenLogsBtn")).Click += (s, e) => OpenLogFolder();
             ((Button)root.FindName("DeepScanBtn")).Click += (s, e) => TriggerDeepScan();
 
             // Clickable Stat Filter Cards
@@ -1669,11 +1667,6 @@ namespace AngelSystemLoggerPro
             }
         }
 
-        private void OpenLogFolder()
-        {
-            try { Process.Start("explorer.exe", "\"" + _logDir + "\""); } catch { }
-        }
-
         private void TriggerDeepScan()
         {
             _engineStatusText.Text = "Scanning...";
@@ -1736,7 +1729,15 @@ namespace AngelSystemLoggerPro
         {
             try
             {
-                string outFile = Path.Combine(_logDir, string.Format("AngelCoreReport_{0:yyyy-MM-dd_HHmmss}.txt", DateTime.Now));
+                Microsoft.Win32.SaveFileDialog sfd = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "Save System Snapshot As",
+                    Filter = "Text Report (*.txt)|*.txt|All Files (*.*)|*.*",
+                    DefaultExt = ".txt",
+                    FileName = string.Format("AngelCoreSnapshot_{0:yyyy-MM-dd_HHmmss}.txt", DateTime.Now)
+                };
+                if (sfd.ShowDialog(this) != true) return;
+                string outFile = sfd.FileName;
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("========================================================================");
                 sb.AppendLine("  ANGEL CORE LOGGER v3.0 - FULL LOCAL SYSTEM SNAPSHOT & EVENT REPORT");
@@ -1751,7 +1752,7 @@ namespace AngelSystemLoggerPro
                 {
                     sb.AppendLine(string.Format("[{0}] [{1}] {2} ({3})", ev.FullTime, ev.Badge, ev.Title, ev.TrustText));
                     sb.AppendLine("    Why: " + ev.Subtitle);
-                    if (!string.IsNullOrEmpty(ev.CommandLine)) sb.AppendLine("    Cmd: " + ev.CommandLine);
+                    if (!string.IsNullOrEmpty(ev.CommandLine)) sb.AppendLine("    Cmd: " + IpPrivacyHelper.ApplyIpMask(ev.CommandLine, _settings.MaskIp));
                 }
                 sb.AppendLine();
                 sb.AppendLine("--- EXTERNAL NETWORK CONNECTIONS ---");

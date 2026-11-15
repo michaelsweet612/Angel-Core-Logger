@@ -31,11 +31,12 @@ A 100% local, privacy-first Windows desktop application (`AngelSystemLoggerPro.e
 
 ## Controls, Tray & Privacy
 
-- **Mask IPs (`###`)**: Dynamically masks or reveals IPv4 and IPv6 addresses across the live feed, Inspector, Hidden BG, Network tabs, and local `.log` disk files (`Documents\LocalActivityLogs\ActivityLog_YYYY-MM-DD.log`).
+- **100% In-Memory Monitoring (Zero Disk Logs)**: Captured activity stays strictly in memory inside the window and is never automatically saved to log files or `Documents` folders. Closing or clearing the feed leaves zero telemetry history on disk.
+- **Mask IPs (`###`)**: Dynamically masks or reveals IPv4 and IPv6 addresses across the live feed, Inspector, Hidden BG, Network tabs, and manual snapshot exports.
 - **Deep Hidden**: Toggles deep telemetry events (windowless background spawns, scheduled tasks, diagnostics, listening ports).
 - **Startup**: Registers or removes `AngelSystemLoggerPro.exe` from Windows Startup (`HKCU\...\Run`).
-- **System Tray (`NotifyIcon`)**: Minimize or close to the tray while keeping background monitoring active; double-click the tray icon to bring the window back or right-click for **Run Deep X-Ray Scan**, **Pause/Resume Monitoring**, and **Open Log Folder**.
-- **Settings (`⚙ Settings`)**: Configure auto-save logs, start minimized, tray behavior, muted process exclusions, full `.txt` system report export, and **Restart as Administrator** for protected system command lines.
+- **System Tray (`NotifyIcon`)**: Minimize or close to the tray while keeping background monitoring active; double-click the tray icon to bring the window back or right-click for **Run Deep X-Ray Scan**, **Pause/Resume Monitoring**, and **Clear In-Memory Feed**.
+- **Settings (`⚙ Settings`)**: Configure start minimized, tray behavior, muted process exclusions, optional manual **Save Snapshot As... (.txt)** dialog, and **Restart as Administrator** for protected system command lines.
 
 ---
 
